@@ -64,9 +64,11 @@ if __name__ == "__main__":
             code_file = zac_compiler.code_filename
             with open(code_file, 'r') as f:
                 result = json.load(f)
+
             if to_run_simulation:
                 # set arch fidelity 
                 # run simulation
+                print("Compiled circuit {} successfully, Run simulation".format(benchmark))
                 simulator = Simulator()
                 simulator.set_arch_spec(spec)
                 simulator.parse(zac_compiler.code_filename)
@@ -83,6 +85,7 @@ if __name__ == "__main__":
 
             if exp_spec["animation"]:
                 # construct directory for fidelity animation
+                print("Generating animation for circuit {}".format(benchmark))
                 directory = zac_compiler.dir+"animation"
                 if not os.path.exists(directory):
                     os.makedirs(directory)

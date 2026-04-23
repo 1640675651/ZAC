@@ -44,14 +44,32 @@ class Router_mixin:
         """
         process layers of movement from storage zone to Rydberg and back to storage zone
         """
-        # layer_time = [] # use to record the solving time per layer
         initial_mapping = self.qubit_mapping[2 * layer]
-        gate_mapping = self.qubit_mapping[2 * layer+1]
-        if layer + 2 < len(self.qubit_mapping):
-            final_mapping = self.qubit_mapping[2 * layer+2]
-        else:
-            final_mapping = None
+        gate_mapping = self.qubit_mapping[2 * layer + 1]
+        final_mapping = self.qubit_mapping[2 * layer + 2] if (layer + 2) < len(self.qubit_mapping) else None
+        self.route_one_layer(layer, initial_mapping, gate_mapping, final_mapping)
 
+    def route_init(self):
+        """
+        Initialize routing state so routing can be executed layer-by-layer.
+
+        This mirrors the initialization at the beginning of `route_qubit()`.
+        """
+        self.aod_end_time = [(0, i) for i in range(len(self.architecture.dict_AOD))]
+        self.aod_dependency = [0 for i in range(len(self.architecture.dict_AOD))]
+        self.rydberg_dependency = [0 for i in range(len(self.architecture.entanglement_zone))]
+        self.qubit_dependency = [0 for i in range(self.n_q)]
+        self.site_dependency = dict()
+        self.write_initial_instruction()
+
+    def route_one_layer(self, layer: int, initial_mapping: list, gate_mapping: list, final_mapping):
+        """
+        Route a single Rydberg stage given explicit mappings.
+
+        - initial_mapping: mapping before the stage (S_layer)
+        - gate_mapping: mapping for executing the stage (G_layer)
+        - final_mapping: mapping after the stage (S_{layer+1}) or None
+        """
         # sort remain_graph based on qubit distance if using maximal is
         remain_graph = [] # consist qubits to be moved
         for gate in self.gate_scheduling[layer]:
@@ -59,8 +77,6 @@ class Router_mixin:
                 if initial_mapping[q] != gate_mapping[q]:
                     assert(initial_mapping[q][0] == 0 or gate_mapping[q][0] == 0)
                     remain_graph.append(q)
-            # remain_graph.append(gate[0])
-            # remain_graph.append(gate[1])
         
         if not(self.routing_strategy == "mis" or self.routing_strategy == "maximalis"):
             remain_graph = sorted(remain_graph, key=lambda x: (math.dist(self.architecture.exact_SLM_location_tuple(initial_mapping[x]),\
@@ -69,11 +85,8 @@ class Router_mixin:
         id_layer_start = len(self.result_json['instructions'])
         batch = 0
         while remain_graph:
-            # graph construction
             vectors = self.graph_construction(remain_graph, initial_mapping, gate_mapping)
-            # collect violation
             violations = self.collect_violation(vectors)
-            # solve MIS
             if self.routing_strategy == "mis":
                 moved_qubits = self.kamis_solve(len(vectors), violations, batch)
             else:
@@ -81,20 +94,15 @@ class Router_mixin:
 
             set_aod = {remain_graph[i] for i in moved_qubits} # use to record aods per movement layer
             self.process_movement_layer(set_aod, initial_mapping, gate_mapping)
-            tmp = [q for q in remain_graph if q not in set_aod]
-            remain_graph = tmp
+            remain_graph = [q for q in remain_graph if q not in set_aod]
             batch += 1
-            # print("time for post processsing: {}".format(time.time() - t_tmp))
-            # layer_time.append(float(time.time() - start_time))
 
         # append a layer for gate execution 
         self.process_gate_layer(layer, gate_mapping)
+
         # move qubit back to the final location
         if final_mapping is not None:
             if self.dynamic_placement or self.reuse:
-                # print("find reverse movement")
-                # print(gate_mapping)
-                # print(final_mapping)
                 remain_graph = [] # consist qubits to be moved
                 for gate in self.gate_scheduling[layer]:
                     for q in gate:
@@ -105,33 +113,23 @@ class Router_mixin:
                     remain_graph = sorted(remain_graph, key=lambda x: (math.dist(self.architecture.exact_SLM_location_tuple(final_mapping[x]), \
                                                                                 self.architecture.exact_SLM_location_tuple(gate_mapping[x]))), reverse=True)
                 while remain_graph:                
-                    # graph construction
                     vectors = self.graph_construction(remain_graph, final_mapping, gate_mapping)
-                    # collect violation
                     violations = self.collect_violation(vectors)
-                    # print("remain_graph")
-                    # print(remain_graph)
-                    # print("vectors")
-                    # print(vectors)
-                    # print("violations")
-                    # print(violations)
-                    # input()
 
                     if self.routing_strategy == "mis":
                         moved_qubits = self.kamis_solve(len(vectors), violations, batch)
                     else:
                         moved_qubits = self.maximalis_solve(len(vectors), violations)
-                    # todo: add layer
                     set_aod = {remain_graph[i] for i in moved_qubits} # use to record aods per movement layer
                     self.process_movement_layer(set_aod, gate_mapping, final_mapping)
                     
-                    tmp = [q for q in remain_graph if q not in set_aod]
-                    remain_graph = tmp
+                    remain_graph = [q for q in remain_graph if q not in set_aod]
                     batch += 1
             else:
                 # construct reverse layer
                 self.construct_reverse_layer(id_layer_start, gate_mapping, final_mapping)
-            self.aod_assignment(id_layer_start)
+
+        self.aod_assignment(id_layer_start)
                 
     
     def graph_construction(self, remain_graph: list, initial_mapping: list, final_mapping: list):

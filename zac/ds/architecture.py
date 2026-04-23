@@ -361,14 +361,9 @@ class Architecture:
     
 
     def movement_duration(self, x1, y1, x2, y2):
-        # d /t^2 = a = 2750m/s
+        # 2d / t^2 = a = 5500m/s^2 = 0.0055um/us^2
         a = 0.00275
         d = math.dist((x1, y1), (x2, y2))
-        # d= 15
         t = math.sqrt(d/a)
         return t
-
-            
-            
-            
 

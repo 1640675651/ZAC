@@ -9,6 +9,7 @@ from scipy.sparse.csgraph import maximum_bipartite_matching
 import time
 import json
 from qiskit import transpile, QuantumCircuit, qpy
+from zac.placer.vmplacer import VertexMatchingPlacer
 
 class ZAC(Scheduler_mixin, Placer_mixin, Router_mixin, Verifier_mixin, Animator):
     """class to solve QLS problem."""
@@ -32,6 +33,7 @@ class ZAC(Scheduler_mixin, Placer_mixin, Router_mixin, Verifier_mixin, Animator)
         self.reuse = True
         self.resyn = True
         self.common_1q = 0
+        self.online = False
 
     def parse_setting(self, setting: dict):
         if "name" in setting:
@@ -60,6 +62,8 @@ class ZAC(Scheduler_mixin, Placer_mixin, Router_mixin, Verifier_mixin, Animator)
             self.scheduling_strategy = setting["scheduling"]
         if "resyn" in setting:
             self.resyn = setting["resyn"]
+        if "online" in setting:
+            self.online = setting["online"]
     
     def set_architecture_spec_path(self, path: str):
         self.result_json['architecture_spec_path'] = path
@@ -231,12 +235,81 @@ class ZAC(Scheduler_mixin, Placer_mixin, Router_mixin, Verifier_mixin, Animator)
         
         self.place_qubit_initial()
         print("[INFO]               Time for initial placement: {}s".format(self.runtime_analysis["initial placement"]))
-        self.place_qubit_intermedeiate()
-        print("[INFO]               Time for intermediate placement: {}s".format(self.runtime_analysis["intermediate placement"]))
-        self.route_qubit()
+        if not self.online:
+            self.place_qubit_intermedeiate()
+            print("[INFO]               Time for intermediate placement: {}s".format(self.runtime_analysis["intermediate placement"]))
+            self.route_qubit()
+        else:
+            self.runtime_analysis["online_placement_per_layer_ms"] = []
+            self.runtime_analysis["online_routing_per_layer_ms"] = []
+            self.runtime_analysis["online_total_per_layer_ms"] = []
+
+            placer = VertexMatchingPlacer(self.qubit_mapping[0])
+            placer.online_init(
+                self.architecture,
+                self.qubit_mapping[0],
+                self.reuse_qubit,
+                self.dynamic_placement,
+            )
+
+            # initialize router state and start building instructions
+            self.route_init()
+
+            S_i = self.qubit_mapping[0]
+            # for layer in range(len(self.gate_scheduling)):
+            #     layer_t0 = time.perf_counter()
+
+            #     gates_i = self.gate_scheduling[layer]
+            #     gates_ip1 = self.gate_scheduling[layer + 1] if (layer + 1) < len(self.gate_scheduling) else None # 1-stage lookahead
+
+            #     t_p0 = time.perf_counter()
+            #     G_i = placer.online_place_gate_layer(layer, gates_i, gates_ip1)
+            #     S_next = placer.online_place_storage_next(layer, gates_ip1)
+            #     t_p1 = time.perf_counter()
+
+            #     t_r0 = time.perf_counter()
+            #     self.route_one_layer(layer, S_i, G_i, S_next)
+            #     t_r1 = time.perf_counter()
+
+            #     layer_t1 = time.perf_counter()
+            #     self.runtime_analysis["online_placement_per_layer_ms"].append((t_p1 - t_p0) * 1000.0)
+            #     self.runtime_analysis["online_routing_per_layer_ms"].append((t_r1 - t_r0) * 1000.0)
+            #     self.runtime_analysis["online_total_per_layer_ms"].append((layer_t1 - layer_t0) * 1000.0)
+
+            #     S_i = S_next
+
+            for layer in range(len(self.gate_scheduling)):
+                layer_t0 = time.perf_counter()
+                t_p0 = time.perf_counter()
+                G_i, S_next = placer.online_run(layer, self.gate_scheduling, self.dynamic_placement, self.reuse_qubit)
+                t_p1 = time.perf_counter()
+
+                t_r0 = time.perf_counter()
+                self.route_one_layer(layer, S_i, G_i, S_next)
+                t_r1 = time.perf_counter()
+
+                layer_t1 = time.perf_counter()
+                self.runtime_analysis["online_placement_per_layer_ms"].append((t_p1 - t_p0) * 1000.0)
+                self.runtime_analysis["online_routing_per_layer_ms"].append((t_r1 - t_r0) * 1000.0)
+                self.runtime_analysis["online_total_per_layer_ms"].append((layer_t1 - layer_t0) * 1000.0)
+                
+                S_i = S_next
+
+            # keep output format consistent with offline code
+            self.flatten_rearrangment_instruction()
+            self.runtime_analysis["routing"] = sum(self.runtime_analysis["online_routing_per_layer_ms"]) / 1000.0
+
+            n_layer = len(self.runtime_analysis["online_total_per_layer_ms"])
+            if n_layer > 0:
+                avg_place = sum(self.runtime_analysis["online_placement_per_layer_ms"]) / n_layer
+                avg_route = sum(self.runtime_analysis["online_routing_per_layer_ms"]) / n_layer
+                avg_total = sum(self.runtime_analysis["online_total_per_layer_ms"]) / n_layer
+                print("[INFO]               Online avg placement per layer: {:.3f} ms".format(avg_place))
+                print("[INFO]               Online avg routing per layer: {:.3f} ms".format(avg_route))
+                print("[INFO]               Online avg total per layer: {:.3f} ms".format(avg_total))
         self.runtime_analysis["total"] = time.time()- t_s
         print("[INFO]               Time for routing: {}s".format(self.runtime_analysis["routing"]))
-        print("[INFO] ZAC: Toal Time: {}s".format(self.runtime_analysis["total"]))
+        print("[INFO] ZAC: Total Time: {}s".format(self.runtime_analysis["total"]))
         if save_file:
             if not self.dir:
                 self.dir = "./result/"

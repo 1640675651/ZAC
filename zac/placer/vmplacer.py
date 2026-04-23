@@ -27,6 +27,9 @@ class VertexMatchingPlacer:
         # print(self.mapping[0])
         # print('Hi')
         for layer in range(len(list_gate)):
+            # zhz: it looks weird that we compute both reuse and non-reuse qubit placement for the same layer.
+            # However, filter_mapping will compare the reuse and non-reuse qubit placement, and select the better one.
+            
             # the case that don't reuse qubits
             if dynamic_placement:
                 if self.print_detail:
@@ -60,6 +63,118 @@ class VertexMatchingPlacer:
                     self.filter_mapping(layer)
 
         print("[INFO] ZAC: Minimum-weight-full-matching-based intermediate placement: Finish")
+
+    # -------------------------- online helpers --------------------------
+    def online_init(self, architecture: Architecture, initial_storage_mapping: list, list_reuse_qubits: list, dynamic_placement: bool):
+        """
+        Initialize this placer for online (stage-by-stage) placement.
+
+        This does not change the existing offline `run()` behavior; it just sets
+        up state so callers can repeatedly request one stage at a time.
+        """
+        self.architecture = architecture
+        self.list_reuse_qubit = list_reuse_qubits
+        self.mapping = [deepcopy(initial_storage_mapping)]
+        self.n_qubit = len(initial_storage_mapping)
+        self.dynamic_placement = dynamic_placement
+
+    def online_run(self, layer, list_gate, dynamic_placement, list_reuse_qubits):
+        # returns G_layer and S_{layer+1}
+        # It's kind of ugly to manipulate the indexes because the original run() function computes S_{layer+1} and G_{layer+1} in each iteration. 
+    
+        # zhz: it looks weird that we compute both reuse and non-reuse qubit placement for the same layer.
+        # However, filter_mapping will compare the reuse and non-reuse qubit placement, and select the better one.
+        if layer == 0:
+            self.place_gate(self.mapping, list_gate[0:2], 0, False)
+        # the case that don't reuse qubits
+        if dynamic_placement:
+            if self.print_detail:
+                print("[INFO]               Qubit placement: Start")
+            self.place_qubit(list_gate[layer:], layer, False)
+        else:
+            self.mapping.append(deepcopy(self.mapping[0]))  # keep the initial mapping for static placement
+        if layer + 1 < len(list_gate):
+            if self.print_detail:
+                print("[INFO]               Gate placement: Start")
+            self.place_gate(self.mapping[-2:], list_gate[layer+1:layer+3], layer+1, False)
+        # the case that reuse qubits
+        if len(list_reuse_qubits[layer]) > 0:
+            if dynamic_placement:
+                if self.print_detail:
+                    print("[INFO]               Qubit placement: Start")
+                self.place_qubit(list_gate[layer:], layer, True)
+            else:
+                self.mapping.append(deepcopy(self.mapping[0]))  # keep the initial mapping for static placement
+                for q in list_reuse_qubits[layer]:
+                    self.mapping[-1][q] = self.mapping[-4][q] 
+            if layer + 1 < len(list_gate):
+                if self.print_detail:
+                    print("[INFO]               Gate placement: Start")
+                self.place_gate([self.mapping[-4], self.mapping[-1]], list_gate[layer+1:layer+3], layer+1, True)
+                # keep the mapping with shorter distance
+                self.filter_mapping(layer)
+
+        # the last layer will not have G_{layer+1}, so the lasy 2 elements are S_{layer+1} and G_{layer}.
+        if layer == len(list_gate) - 1:
+            return self.mapping[-2], self.mapping[-1]
+        return self.mapping[-3], self.mapping[-2]
+
+
+    def online_place_gate_layer(self, layer: int, gates_this_layer: list, gates_next_layer: list | None):
+        """
+        Compute gate mapping G_layer for the given 2Q gate layer, with optional
+        1-stage lookahead using gates_next_layer.
+
+        Returns the newly appended gate mapping.
+        """
+        if gates_next_layer is None:
+            list_two_gate_layer = [gates_this_layer]
+        else:
+            list_two_gate_layer = [gates_this_layer, gates_next_layer]
+
+        # Reuse between layer-1 and layer is handled via place_gate(test_reuse=True).
+        test_reuse = (layer > 0 and len(self.list_reuse_qubit[layer - 1]) > 0)
+
+        # zhz: place_gates expects the mapping during and after the last layer,
+        # and the gates of the current and the next layer.
+        if layer == 0:
+            list_qubit_mapping = [self.mapping[-1]]  # S_0
+        else:
+            # mapping pattern is [..., G_{layer-1}, S_layer] in online mode
+            list_qubit_mapping = [self.mapping[-2], self.mapping[-1]]
+        self.place_gate(list_qubit_mapping, list_two_gate_layer, layer, test_reuse)
+        return self.mapping[-1]
+
+    def online_place_storage_next(self, layer: int, gates_next_layer: list | None):
+        """
+        Compute storage mapping S_{layer+1} after executing gate layer `layer`.
+
+        Note: the offline placer supports a richer reuse-aware branch selection
+        (`filter_mapping`). For the online feasibility benchmark we keep this
+        step simple: we perform storage placement with *bounded lookahead* (at
+        most 1 future layer) and do not attempt the dual-branch reuse filtering.
+        """
+        # TODO: currently always reuse if possible.
+        # Should use filter_mapping to select the better one, like in offline mode.
+        test_reuse = (len(self.list_reuse_qubit[layer]) > 0)
+        
+        if not self.dynamic_placement:
+            self.mapping.append(deepcopy(self.mapping[0]))
+            if test_reuse:
+                for q in self.list_reuse_qubit[layer]:
+                    self.mapping[-1][q] = self.mapping[-2][q] 
+            return self.mapping[-1]
+
+        # place_qubit expects list_gate[0] is current layer, list_gate[1] is lookahead.
+        # zhz: list_gate[0] is never used in place_qubit, we can just pass [[]] here. Only list_gate[1] is used.
+        # For online mode we restrict to 1-stage lookahead only.
+        if gates_next_layer is None:
+            list_gate = [[]]
+        else:
+            list_gate = [[], gates_next_layer]
+
+        self.place_qubit(list_gate, layer, test_reuse)
+        return self.mapping[-1]
 
     def filter_mapping(self, layer):
         # cost for mapping without reuse
@@ -330,7 +445,7 @@ class VertexMatchingPlacer:
         # construct a Boolean array to record the sites occupied by the qubits
         qubit_mapping = self.mapping[0]
         if test_reuse:
-            last_gate_mapping = self.mapping[-3]
+            last_gate_mapping = self.mapping[-3] # zhz: -3 because [G_r, S_nr, G_nr, S_r]. _r stands for reuse, _nr stands for non-reuse. -3 finds the last gate placement with reuse.
         else:
             last_gate_mapping = self.mapping[-1]
         is_empty_storage_site = dict()
@@ -344,7 +459,7 @@ class VertexMatchingPlacer:
             array_id = mapping[0]
             if array_id in is_empty_storage_site:
                 is_empty_storage_site[array_id][mapping[1]][mapping[2]] = False
-            elif (not test_reuse) or (q not in self.list_reuse_qubit[layer]):
+            elif (not test_reuse) or (q not in self.list_reuse_qubit[layer]): # zhz: reuse will be dominated by non-reuse qubit move back placement.
                 qubit_to_place.append(q)
         # print(qubit_to_place)
         common_site = set()
