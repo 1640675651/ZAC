@@ -84,18 +84,37 @@ class Router_mixin:
         
         id_layer_start = len(self.result_json['instructions'])
         batch = 0
-        while remain_graph:
+        if self.routing_strategy == "maximalis" or self.routing_strategy == "maximalis_sort": # zhz: maximal independent set (equivalent to greedy graph coloring)
+            # Build the static conflict graph once; movement vectors are fixed for (initial_mapping -> gate_mapping).
+            # O(n^2) graph construction
             vectors = self.graph_construction(remain_graph, initial_mapping, gate_mapping)
             violations = self.collect_violation(vectors)
-            if self.routing_strategy == "mis":
-                moved_qubits = self.kamis_solve(len(vectors), violations, batch)
-            else:
-                moved_qubits = self.maximalis_solve(len(vectors), violations)
+            adjacency = self._build_adjacency_list(len(vectors), violations)
+            active = [True] * len(vectors)
+            remaining = len(vectors)
 
-            set_aod = {remain_graph[i] for i in moved_qubits} # use to record aods per movement layer
-            self.process_movement_layer(set_aod, initial_mapping, gate_mapping)
-            remain_graph = [q for q in remain_graph if q not in set_aod]
-            batch += 1
+            # O(n^2) maximal independent set solving
+            while remaining > 0:
+                moved_idx = self._maximalis_solve_active(adjacency, active)
+                set_aod = {remain_graph[i] for i in moved_idx}  # record aods per movement layer
+                self.process_movement_layer(set_aod, initial_mapping, gate_mapping)
+                for i in moved_idx:
+                    active[i] = False
+                batch += 1
+                remaining -= len(moved_idx)
+                
+        elif self.routing_strategy == "mis": # maximum independent set by KaMIS
+            # Default behavior (incl. "mis" and other strategies): rebuild induced graph each batch.
+            while remain_graph:
+                vectors = self.graph_construction(remain_graph, initial_mapping, gate_mapping)
+                violations = self.collect_violation(vectors)
+                moved_qubits = self.kamis_solve(len(vectors), violations, batch)
+                set_aod = {remain_graph[i] for i in moved_qubits} # use to record aods per movement layer
+                self.process_movement_layer(set_aod, initial_mapping, gate_mapping)
+                remain_graph = [q for q in remain_graph if q not in set_aod]
+                batch += 1
+        else:
+            raise ValueError(f"Unknown routing strategy: {self.routing_strategy}")
 
         # append a layer for gate execution 
         self.process_gate_layer(layer, gate_mapping)
@@ -112,24 +131,72 @@ class Router_mixin:
                 if not(self.routing_strategy == "mis" or self.routing_strategy == "maximalis"):
                     remain_graph = sorted(remain_graph, key=lambda x: (math.dist(self.architecture.exact_SLM_location_tuple(final_mapping[x]), \
                                                                                 self.architecture.exact_SLM_location_tuple(gate_mapping[x]))), reverse=True)
-                while remain_graph:                
-                    vectors = self.graph_construction(remain_graph, final_mapping, gate_mapping)
+                if self.routing_strategy == "maximalis" or self.routing_strategy == "maximalis_sort": # zhz: maximal independent set (equivalent to greedy graph coloring)
+                    # Build the static conflict graph once; movement vectors are fixed for (initial_mapping -> gate_mapping).
+                    # O(n^2) graph construction
+                    vectors = self.graph_construction(remain_graph, gate_mapping, final_mapping)
                     violations = self.collect_violation(vectors)
+                    adjacency = self._build_adjacency_list(len(vectors), violations)
+                    active = [True] * len(vectors)
+                    remaining = len(vectors)
 
-                    if self.routing_strategy == "mis":
+                    # O(n^2) maximal independent set solving
+                    while remaining > 0:
+                        moved_idx = self._maximalis_solve_active(adjacency, active)
+                        set_aod = {remain_graph[i] for i in moved_idx}  # record aods per movement layer
+                        self.process_movement_layer(set_aod, gate_mapping, final_mapping)
+                        for i in moved_idx:
+                            active[i] = False
+                        batch += 1
+                        remaining -= len(moved_idx)
+
+                elif self.routing_strategy == "mis": # maximum independent set by KaMIS
+                    while remain_graph:                
+                        vectors = self.graph_construction(remain_graph, gate_mapping, final_mapping)
+                        violations = self.collect_violation(vectors)
                         moved_qubits = self.kamis_solve(len(vectors), violations, batch)
-                    else:
-                        moved_qubits = self.maximalis_solve(len(vectors), violations)
-                    set_aod = {remain_graph[i] for i in moved_qubits} # use to record aods per movement layer
-                    self.process_movement_layer(set_aod, gate_mapping, final_mapping)
-                    
-                    remain_graph = [q for q in remain_graph if q not in set_aod]
-                    batch += 1
+                        set_aod = {remain_graph[i] for i in moved_qubits} # use to record aods per movement layer
+                        self.process_movement_layer(set_aod, gate_mapping, final_mapping)
+                        remain_graph = [q for q in remain_graph if q not in set_aod]
+                        batch += 1
+                else:
+                    raise ValueError(f"Unknown routing strategy: {self.routing_strategy}")
             else:
                 # construct reverse layer
                 self.construct_reverse_layer(id_layer_start, gate_mapping, final_mapping)
 
         self.aod_assignment(id_layer_start)
+
+    def _build_adjacency_list(self, n: int, edges: list[tuple[int, int]]):
+        """
+        Build adjacency lists from undirected edge pairs.
+
+        For windowed maximalis routing, the movement conflict relation is static
+        within one phase (initial->target mappings), so we can reuse this graph
+        across batches.
+        """
+        adjacency = [[] for _ in range(n)]
+        for (u, v) in edges:
+            adjacency[u].append(v)
+            adjacency[v].append(u)
+        return adjacency
+
+    def _maximalis_solve_active(self, adjacency: list[list[int]], active: list[bool]) -> list[int]:
+        """
+        Greedy maximal independent set on the induced subgraph of active vertices.
+
+        Returns a list of vertex indices selected to move in the current batch.
+        """
+        n = len(active)
+        is_node_conflict = [False] * n
+        result = []
+        for i in range(n):
+            if (not active[i]) or is_node_conflict[i]:
+                continue
+            result.append(i)
+            for j in adjacency[i]:
+                is_node_conflict[j] = True
+        return result
                 
     
     def graph_construction(self, remain_graph: list, initial_mapping: list, final_mapping: list):
@@ -139,7 +206,7 @@ class Router_mixin:
             vector_length = min(self.window_size, len(remain_graph))
         else:
             vector_length = len(remain_graph)
-        vectors = [(0,0,0,0, ) for _ in range(vector_length)]
+        vectors = [(0,0,0,0, ) for _ in range(vector_length)] # zhz: use_window is not used for now. If window_size < len(remain_graph), we will get a crash.
         # t_tmp = time.time()
         i = 0
         # i12 = -1

@@ -1,0 +1,22 @@
+{
+  "qasm_list": [
+    "benchmark/hpca/ising_n98_transpiled.qasm"
+  ],
+  "zac_setting": [
+    {
+      "arch_spec": "hardware_spec/toy_architecture.json",
+      "dependency": true,
+      "dir": "result/zac/test_online/",
+      "routing_strategy": "maximalis_sort",
+      "trivial_placement": true,
+      "dynamic_placement": true,
+      "use_window": true,
+      "window_size": 1000,
+      "reuse": true,
+      "use_verifier": true,
+      "online": true
+    }
+  ],
+  "simulation": true,
+  "animation": true
+}
