@@ -73,6 +73,17 @@ if __name__ == "__main__":
                 simulator.set_arch_spec(spec)
                 simulator.parse(zac_compiler.code_filename)
                 fideilty_result = simulator.simulate()
+                sim_total_time_us = fideilty_result.get("cir_duration", None)
+                n_layer = len(zac_compiler.gate_scheduling) if zac_compiler.gate_scheduling is not None else 0
+                if sim_total_time_us is not None:
+                    if n_layer > 0:
+                        print("[INFO] Simulation time: {:.3f} us total, {:.3f} us/layer ({} layers)".format(
+                            sim_total_time_us,
+                            sim_total_time_us / n_layer,
+                            n_layer,
+                        ))
+                    else:
+                        print("[INFO] Simulation time: {:.3f} us total".format(sim_total_time_us))
                 # continue
                 # construct directory for fidelity result
                 directory = zac_compiler.dir+"fidelity"
