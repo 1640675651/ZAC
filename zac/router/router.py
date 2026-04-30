@@ -5,6 +5,7 @@ import math
 from random import seed, randrange
 from copy import deepcopy
 from itertools import chain
+import gc
 # from memory_profiler import profile
 
 seed(0)
@@ -70,6 +71,9 @@ class Router_mixin:
         - gate_mapping: mapping for executing the stage (G_layer)
         - final_mapping: mapping after the stage (S_{layer+1}) or None
         """
+        # GC causes latency spikes, so we disable it during routing.
+        gc_was_enabled = gc.isenabled()
+        gc.disable()
         # sort remain_graph based on qubit distance if using maximal is
         remain_graph = [] # consist qubits to be moved
         for gate in self.gate_scheduling[layer]:
@@ -166,6 +170,8 @@ class Router_mixin:
                 self.construct_reverse_layer(id_layer_start, gate_mapping, final_mapping)
 
         self.aod_assignment(id_layer_start)
+        if gc_was_enabled:
+            gc.enable()
 
     def _build_adjacency_list(self, n: int, edges: list[tuple[int, int]]):
         """
