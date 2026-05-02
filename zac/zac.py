@@ -256,44 +256,38 @@ class ZAC(Scheduler_mixin, Placer_mixin, Router_mixin, Verifier_mixin, Animator)
             self.route_init()
 
             S_i = self.qubit_mapping[0]
-            # for layer in range(len(self.gate_scheduling)):
-            #     layer_t0 = time.perf_counter()
+            G_i = None  # G_0 is computed inside online_run when layer == 0.
 
-            #     gates_i = self.gate_scheduling[layer]
-            #     gates_ip1 = self.gate_scheduling[layer + 1] if (layer + 1) < len(self.gate_scheduling) else None # 1-stage lookahead
-
-            #     t_p0 = time.perf_counter()
-            #     G_i = placer.online_place_gate_layer(layer, gates_i, gates_ip1)
-            #     S_next = placer.online_place_storage_next(layer, gates_ip1)
-            #     t_p1 = time.perf_counter()
-
-            #     t_r0 = time.perf_counter()
-            #     self.route_one_layer(layer, S_i, G_i, S_next)
-            #     t_r1 = time.perf_counter()
-
-            #     layer_t1 = time.perf_counter()
-            #     self.runtime_analysis["online_placement_per_layer_ms"].append((t_p1 - t_p0) * 1000.0)
-            #     self.runtime_analysis["online_routing_per_layer_ms"].append((t_r1 - t_r0) * 1000.0)
-            #     self.runtime_analysis["online_total_per_layer_ms"].append((layer_t1 - layer_t0) * 1000.0)
-
-            #     S_i = S_next
-
+            # Each step: S_{i+1}, G_{i+1} from S_i, G_i (place_qubit then lookahead place_gate).
             for layer in range(len(self.gate_scheduling)):
                 layer_t0 = time.perf_counter()
                 t_p0 = time.perf_counter()
-                G_i, S_next = placer.online_run(layer, self.gate_scheduling, self.dynamic_placement, self.reuse_qubit)
+                # Need G_i for layer=0
+                S_next, G_next, G_i = placer.online_run(
+                    layer,
+                    self.gate_scheduling,
+                    self.dynamic_placement,
+                    self.reuse_qubit,
+                    S_i,
+                    G_i,
+                )
                 t_p1 = time.perf_counter()
 
                 t_r0 = time.perf_counter()
                 self.route_one_layer(layer, S_i, G_i, S_next)
                 t_r1 = time.perf_counter()
 
+                if t_r1 - t_r0 > 0.001:
+                    print(f"Time for route_one_layer: {(t_r1 - t_r0) * 1000} ms, layer = {layer}")
+
                 layer_t1 = time.perf_counter()
                 self.runtime_analysis["online_placement_per_layer_ms"].append((t_p1 - t_p0) * 1000.0)
                 self.runtime_analysis["online_routing_per_layer_ms"].append((t_r1 - t_r0) * 1000.0)
                 self.runtime_analysis["online_total_per_layer_ms"].append((layer_t1 - layer_t0) * 1000.0)
-                
+
                 S_i = S_next
+                if G_next is not None:
+                    G_i = G_next
 
             # keep output format consistent with offline code
             self.flatten_rearrangment_instruction()
