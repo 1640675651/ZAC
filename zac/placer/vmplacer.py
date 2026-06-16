@@ -40,7 +40,7 @@ class VertexMatchingPlacer:
                 self.mapping.append(deepcopy(self.mapping[0]))  # keep the initial mapping for static placement
             # print(self.mapping[0])
             # print('Hi2')
-            if layer + 1 < len(list_gate):
+            if layer + 1 < len(list_gate): # the lass call will only do place_qubit, no place_gate
                 if self.print_detail:
                     print("[INFO]               Gate placement: Start")
                 # print(self.mapping[-2])

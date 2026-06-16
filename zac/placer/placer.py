@@ -1,6 +1,7 @@
 import time
 from zac.placer.saplacer import SAPlacer
 from zac.placer.vmplacer import VertexMatchingPlacer
+from zac.placer.peplacer import PointEmbeddingPlacer
 from copy import deepcopy
 from random import shuffle, seed
 # from memory_profiler import profile
@@ -125,4 +126,36 @@ class Placer_mixin:
             # put qubits back to the storage zone after Rydberg stages  
 
         self.runtime_analysis["intermediate placement"] = time.time()- t_p
+
+    def place_qubit_intermediate_midpoint(self):
+        t_p = time.time()
+        self.runtime_analysis["placement_per_layer_ms"] = []
+
+        placer = PointEmbeddingPlacer()
+
+        S_i = self.qubit_mapping[0]
+        G_i = None 
+
+        # Each step: G_i from S_i.
+        n_layer = len(self.gate_scheduling)
+        for layer in range(n_layer):
+            t_p0 = time.perf_counter()
+            G_i = placer.run(
+                self.architecture,
+                self.gate_scheduling[layer],
+                self.qubit_mapping[-1] # S_i
+            )
+            
+            self.qubit_mapping.extend([G_i, S_i])
+ 
+            t_p1 = time.perf_counter()
+            self.runtime_analysis["placement_per_layer_ms"].append((t_p1 - t_p0) * 1000.0)
+
+        if n_layer > 0:
+            avg_place = sum(self.runtime_analysis["placement_per_layer_ms"]) / n_layer
+            print("[INFO]               avg placement per layer: {:.3f} ms".format(avg_place))
+
+        self.runtime_analysis["intermediate placement"] = sum(self.runtime_analysis["placement_per_layer_ms"])
+
+
     

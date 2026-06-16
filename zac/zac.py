@@ -25,6 +25,7 @@ class ZAC(Scheduler_mixin, Placer_mixin, Router_mixin, Verifier_mixin, Animator)
         self.trivial_placement = False
         self.routing_strategy = "maximalis_sort"
         self.scheduling_strategy = "asap"
+        self.placement_strategy = "vertex_matching"
         self.dynamic_placement = True
         self.given_initial_mapping = None
         self.has_dependency = True
@@ -46,6 +47,10 @@ class ZAC(Scheduler_mixin, Placer_mixin, Router_mixin, Verifier_mixin, Animator)
             self.routing_strategy = setting["routing_strategy"]
         if "trivial_placement" in setting:
             self.trivial_placement = setting["trivial_placement"]
+        if "placement_strategy" in setting:
+            self.placement_strategy = setting["placement_strategy"]
+            if self.placement_strategy not in {"vertex_matching", "point_embedding"}:
+                raise ValueError("Unrecognized placement strategy")
         if "dynamic_placement" in setting:
             self.dynamic_placement = setting["dynamic_placement"]
         if "use_window" in setting:
@@ -89,10 +94,13 @@ class ZAC(Scheduler_mixin, Placer_mixin, Router_mixin, Verifier_mixin, Animator)
             print("[INFO]           Initial placement strategy: SA-based placement with L2 distance model")
         else:
             print("[INFO]           Initial placement strategy: SA-based placement with Euclidean distance model")
-        if self.dynamic_placement:
-            print("[INFO]           Intermediate placement strategy: minimal weighted matching")
-        else:
-            print("[INFO]           Intermediate placement strategy: return to intial mapping")
+        if self.placement_strategy:
+            print(f"[INFO]           Gate placement strategy: {self.placement_strategy}")
+        if self.placement_strategy == "vertex_matching":
+            if self.dynamic_placement:
+                print("[INFO]           Intermediate placement strategy: minimal weighted matching")
+            else:
+                print("[INFO]           Intermediate placement strategy: return to intial mapping")
         if self.reuse:
             print(f"[INFO]                                         : reuse aware")
         else:
@@ -236,7 +244,15 @@ class ZAC(Scheduler_mixin, Placer_mixin, Router_mixin, Verifier_mixin, Animator)
         self.place_qubit_initial()
         print("[INFO]               Time for initial placement: {}s".format(self.runtime_analysis["initial placement"]))
         if not self.online:
-            self.place_qubit_intermedeiate()
+            if self.placement_strategy == "vertex_matching":
+                self.place_qubit_intermedeiate()
+            elif self.placement_strategy == "point_embedding":
+                self.place_qubit_intermediate_midpoint()
+            else:
+                raise ValueError("Unrecognized placement strategy")
+            # for i in self.qubit_mapping:
+            #     print(i)
+            #     input()
             print("[INFO]               Time for intermediate placement: {}s".format(self.runtime_analysis["intermediate placement"]))
             self.route_qubit()
         else:

@@ -803,7 +803,7 @@ class Router_mixin:
         
         init_coords = deepcopy(coords)
 
-        all_col_x = sorted(all_col_x)
+        all_col_x = sorted(set(all_col_x))
 
         # assign AOD column ids based on all x coords needed
         col_x_to_id = {all_col_x[i]: i for i in range(len(all_col_x))}

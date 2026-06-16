@@ -3,14 +3,14 @@
     "zac_setting": [{
         "arch_spec": "hardware_spec/toy_architecture.json",
         "dependency": true,
-        "dir": "result/zac/test/",
+        "dir": "result/zac/test_point_embedding/",
         "routing_strategy": "maximalis_sort",
         "trivial_placement": true,
-        "placement_strategy": "vertex_matching",
+        "placement_strategy": "point_embedding",
         "dynamic_placement": false,
         "use_window": true,
         "window_size": 1000,
-        "reuse": true,
+        "reuse": false,
         "use_verifier": true
     }],
     "simulation": true,
