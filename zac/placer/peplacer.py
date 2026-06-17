@@ -36,12 +36,22 @@ class PointEmbeddingPlacer:
         # rank-compress
         rows, cols, midpoints_ranked = self._rank_compress(midpoints)
 
-        # affine transform
-        # TODO: if rank compressed grid fits into entanglement zone, no affine transform is needed
-        midpoint_transformed = self._affine_transform(midpoints_ranked, rows, cols, ezh, ezw)
-
-        # point embedding
-        midpoint_legalized = self._point_embedding_nearest_free(midpoint_transformed, ezh, ezw)
+        # compression and legalization
+        rank_grid_fits = rows <= ezh and cols <= ezw
+        ranked_points_unique = len(set(midpoints_ranked)) == len(midpoints_ranked)
+        if rank_grid_fits and ranked_points_unique:
+            midpoint_legalized = self._place_ranked_grid_middle_bottom(midpoints_ranked, rows, cols, ezh, ezw)
+        else:
+            midpoint_transformed = self._affine_transform(midpoints_ranked, rows, cols, ezh, ezw)
+            midpoint_legalized = self._point_embedding_nearest_free(midpoint_transformed, ezh, ezw)
+            compact_rows, compact_cols, midpoint_compacted = self._rank_compress(midpoint_legalized)
+            midpoint_legalized = self._place_ranked_grid_middle_bottom(
+                midpoint_compacted,
+                compact_rows,
+                compact_cols,
+                ezh,
+                ezw,
+            )
 
         # full mapping generation
         new_mapping = deepcopy(storage_mapping)
@@ -116,6 +126,34 @@ class PointEmbeddingPlacer:
             transformed.append((target_x, target_y))
 
         return transformed
+
+    def _place_ranked_grid_middle_bottom(
+        self,
+        points: list[tuple[int, int]],
+        source_rows: int,
+        source_cols: int,
+        target_rows: int,
+        target_cols: int,
+    ) -> list[tuple[int, int]]:
+        if source_rows < 0 or source_cols < 0:
+            raise ValueError("source grid dimensions must be non-negative")
+        if target_rows <= 0 or target_cols <= 0:
+            raise ValueError("target grid dimensions must be positive")
+        if not points:
+            return []
+        if source_rows == 0 or source_cols == 0:
+            raise ValueError("non-empty points require non-empty source grid dimensions")
+        if source_rows > target_rows or source_cols > target_cols:
+            raise ValueError("source grid does not fit into target grid")
+
+        x_offset = (target_cols - source_cols + 1) // 2
+        y_offset = 0
+        placed = []
+        for x, y in points:
+            if not (0 <= x < source_cols and 0 <= y < source_rows):
+                raise ValueError("point is outside the source grid")
+            placed.append((x + x_offset, y + y_offset))
+        return placed
 
     def _point_embedding_nearest_free(self, points: list[tuple[int, int]], rows: int, cols: int):
         '''Assign ideal points to distinct grid cells by nearest-free repair.
