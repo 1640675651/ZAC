@@ -229,7 +229,7 @@ class _FreeRows:
                 continue
 
             for col in _nearest_free_columns(free_cols, point[0]):
-                key = (vertical_cost + (col - point[0]) ** 2, row, col)
+                key = (vertical_cost + (col - point[0]) ** 2, vertical_cost, row, col)
                 if best_key is None or key < best_key:
                     best_cell = (col, row)
                     best_key = key
