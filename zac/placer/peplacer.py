@@ -10,19 +10,18 @@ class PointEmbeddingPlacer:
     def __init__(self):
         self.home_storage_mapping = None
 
-    # return G_i and S_{i+1}
+    # return G_i
     # architecture.entanglement_zone is a list of SLM id list. shape: [[id1, id2]]
     # use these id to find SLM objects in architecture.dict_SLM 
     # list_gate: gates in one layer, each gate is a 2-tuple
     # storage_mapping[i] is the location of the ith qubit, in the format of (slm_id, y, x)
-    def run(self, architecture: Architecture, list_gate: [[int, int]], storage_mapping: [(int, int, int)], reuse_qubits: {int}) -> (list, list):
+    def place_gate(self, architecture: Architecture, list_gate: [[int, int]], storage_mapping: [(int, int, int)]) -> list:
         # get entanglement zone width and height
         slmid_l, slmid_r = architecture.entanglement_zone[0]
         slm0 = architecture.dict_SLM[slmid_l]
         ezh, ezw = slm0.n_r, slm0.n_c
         entanglement_slms = {slm_id for zone in architecture.entanglement_zone for slm_id in zone}
         active_slms = {slmid_l, slmid_r}
-        reuse_qubits = set() if reuse_qubits is None else set(reuse_qubits)
 
         if self.home_storage_mapping is None:
             self.home_storage_mapping = deepcopy(storage_mapping)
@@ -94,14 +93,99 @@ class PointEmbeddingPlacer:
             gate_mapping[q1] = (slmid_l, y, x)
             gate_mapping[q2] = (slmid_r, y, x)
 
-        next_storage_mapping = deepcopy(storage_mapping)
-        for q, loc in enumerate(next_storage_mapping):
-            if loc[0] in entanglement_slms:
-                next_storage_mapping[q] = self.home_storage_mapping[q]
+        return gate_mapping
+
+    def choose_next_storage_and_gate(
+        self,
+        architecture: Architecture,
+        current_gate_mapping: list,
+        next_gate: list,
+        reuse_qubits: set,
+    ) -> tuple[list, list, bool]:
+        reuse_qubits = set() if reuse_qubits is None else set(reuse_qubits)
+
+        no_reuse_storage = deepcopy(self.home_storage_mapping)
+        no_reuse_gate = self.place_gate(architecture, next_gate, no_reuse_storage)
+        no_reuse_score = (
+            self._strict_inversion_score(architecture, current_gate_mapping, no_reuse_storage)
+            + self._strict_inversion_score(architecture, no_reuse_storage, no_reuse_gate)
+        )
+
+        if not reuse_qubits:
+            return no_reuse_storage, no_reuse_gate, False
+
+        reuse_storage = deepcopy(self.home_storage_mapping)
+        for q in reuse_qubits:
+            reuse_storage[q] = current_gate_mapping[q]
+        try:
+            reuse_gate = self.place_gate(architecture, next_gate, reuse_storage)
+        except ValueError:
+            return no_reuse_storage, no_reuse_gate, False
+        reuse_score = (
+            self._strict_inversion_score(architecture, current_gate_mapping, reuse_storage)
+            + self._strict_inversion_score(architecture, reuse_storage, reuse_gate)
+        )
+
+        if reuse_score <= no_reuse_score:
+            return reuse_storage, reuse_gate, True
+        return no_reuse_storage, no_reuse_gate, False
+
+    def final_storage_mapping(self) -> list:
+        return deepcopy(self.home_storage_mapping)
+
+    def run(self, architecture: Architecture, list_gate: [[int, int]], storage_mapping: [(int, int, int)], reuse_qubits: {int}) -> (list, list):
+        gate_mapping = self.place_gate(architecture, list_gate, storage_mapping)
+        next_storage_mapping = deepcopy(self.home_storage_mapping)
+        reuse_qubits = set() if reuse_qubits is None else set(reuse_qubits)
         for q in reuse_qubits:
             next_storage_mapping[q] = gate_mapping[q]
-
         return gate_mapping, next_storage_mapping
+
+    def _strict_inversion_score(self, architecture: Architecture, start_mapping: list, end_mapping: list) -> int:
+        moved = [q for q in range(len(start_mapping)) if start_mapping[q] != end_mapping[q]]
+        if len(moved) < 2:
+            return 0
+
+        start_x = []
+        start_y = []
+        end_x = []
+        end_y = []
+        for q in moved:
+            sx, sy = architecture.exact_SLM_location_tuple(start_mapping[q])
+            ex, ey = architecture.exact_SLM_location_tuple(end_mapping[q])
+            start_x.append(sx)
+            start_y.append(sy)
+            end_x.append(ex)
+            end_y.append(ey)
+
+        return (
+            self._count_strict_1d_inversions(start_x, end_x)
+            + self._count_strict_1d_inversions(start_y, end_y)
+        )
+
+    def _count_strict_1d_inversions(self, start_coords: list, end_coords: list) -> int:
+        if len(start_coords) < 2:
+            return 0
+
+        end_rank = {value: rank for rank, value in enumerate(sorted(set(end_coords)))}
+        pairs = sorted((start, end_rank[end]) for start, end in zip(start_coords, end_coords))
+        fenwick = _FenwickTree(len(end_rank))
+        inversions = 0
+        seen = 0
+        i = 0
+        while i < len(pairs):
+            j = i + 1
+            while j < len(pairs) and pairs[j][0] == pairs[i][0]:
+                j += 1
+
+            for _, rank in pairs[i:j]:
+                inversions += seen - fenwick.prefix_sum(rank)
+            for _, rank in pairs[i:j]:
+                fenwick.add(rank, 1)
+                seen += 1
+            i = j
+
+        return inversions
 
     def _embed_midpoints(
         self,
@@ -299,6 +383,25 @@ class PointEmbeddingPlacer:
 
     def _squared_distance(self, cell: tuple[int, int], point: tuple[float, float]) -> float:
         return (cell[0] - point[0]) ** 2 + (cell[1] - point[1]) ** 2
+
+
+class _FenwickTree:
+    def __init__(self, size: int):
+        self.tree = [0] * (size + 1)
+
+    def add(self, index: int, value: int):
+        index += 1
+        while index < len(self.tree):
+            self.tree[index] += value
+            index += index & -index
+
+    def prefix_sum(self, index: int) -> int:
+        total = 0
+        index += 1
+        while index > 0:
+            total += self.tree[index]
+            index -= index & -index
+        return total
 
 
 class _FreeRows:

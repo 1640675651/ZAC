@@ -133,21 +133,38 @@ class Placer_mixin:
 
         placer = PointEmbeddingPlacer()
 
-        # Each step: G_i and S_{i+1} from S_i.
         n_layer = len(self.gate_scheduling)
-        for layer in range(n_layer):
+        if n_layer == 0:
+            self.runtime_analysis["intermediate placement"] = 0
+            return
+
+        t_p0 = time.perf_counter()
+        G_i = placer.place_gate(
+            self.architecture,
+            self.gate_scheduling[0],
+            self.qubit_mapping[0],
+        )
+        self.qubit_mapping.append(G_i)
+        t_p1 = time.perf_counter()
+        self.runtime_analysis["placement_per_layer_ms"].append((t_p1 - t_p0) * 1000.0)
+
+        for layer in range(n_layer - 1):
             t_p0 = time.perf_counter()
-            G_i, S_next = placer.run(
+            S_next, G_next, use_reuse = placer.choose_next_storage_and_gate(
                 self.architecture,
-                self.gate_scheduling[layer],
-                self.qubit_mapping[-1], # S_i
+                G_i,
+                self.gate_scheduling[layer + 1],
                 self.reuse_qubit[layer],
             )
-            
-            self.qubit_mapping.extend([G_i, S_next])
+            if not use_reuse:
+                self.reuse_qubit[layer] = set()
+            self.qubit_mapping.extend([S_next, G_next])
+            G_i = G_next
  
             t_p1 = time.perf_counter()
             self.runtime_analysis["placement_per_layer_ms"].append((t_p1 - t_p0) * 1000.0)
+
+        self.qubit_mapping.append(placer.final_storage_mapping())
 
         if n_layer > 0:
             avg_place = sum(self.runtime_analysis["placement_per_layer_ms"]) / n_layer
