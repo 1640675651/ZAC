@@ -8,63 +8,146 @@ class PointEmbeddingPlacer:
     """class to find a qubit layout via point-grid embedding."""
 
     def __init__(self):
-        pass
+        self.home_storage_mapping = None
 
-    # return gate mapping of one layer
+    # return G_i and S_{i+1}
     # architecture.entanglement_zone is a list of SLM id list. shape: [[id1, id2]]
     # use these id to find SLM objects in architecture.dict_SLM 
     # list_gate: gates in one layer, each gate is a 2-tuple
     # storage_mapping[i] is the location of the ith qubit, in the format of (slm_id, y, x)
-    def run(self, architecture: Architecture, list_gate: [[int, int]], storage_mapping: [(int, int, int)]) -> (list, list):
+    def run(self, architecture: Architecture, list_gate: [[int, int]], storage_mapping: [(int, int, int)], reuse_qubits: {int}) -> (list, list):
         # get entanglement zone width and height
         slmid_l, slmid_r = architecture.entanglement_zone[0]
         slm0 = architecture.dict_SLM[slmid_l]
         ezh, ezw = slm0.n_r, slm0.n_c
+        entanglement_slms = {slm_id for zone in architecture.entanglement_zone for slm_id in zone}
+        active_slms = {slmid_l, slmid_r}
+        reuse_qubits = set() if reuse_qubits is None else set(reuse_qubits)
+
+        if self.home_storage_mapping is None:
+            self.home_storage_mapping = deepcopy(storage_mapping)
 
         K = len(list_gate)
         assert ezh * ezw >= K
-        
-        # extract gate midpoints
+
+        occupied_cells = set()
+        for loc in storage_mapping:
+            if loc[0] in entanglement_slms:
+                if loc[0] not in active_slms:
+                    raise ValueError("point embedding currently supports one entanglement-zone SLM pair")
+                cell = (loc[2], loc[1])
+                if not (0 <= cell[0] < ezw and 0 <= cell[1] < ezh):
+                    raise ValueError("existing entanglement-zone qubit is outside the active grid")
+                occupied_cells.add(cell)
+
         midpoints = []
-        for q1, q2 in list_gate:
+        midpoint_gate_indices = []
+        fixed_gate_cells = {}
+        for gate_index, (q1, q2) in enumerate(list_gate):
             loc1, loc2 = storage_mapping[q1], storage_mapping[q2]
-            # TODO: now assume all qubits are in the storage zone. Handle reuse in the future.
+            q1_in_ez = loc1[0] in entanglement_slms
+            q2_in_ez = loc2[0] in entanglement_slms
+            if q1_in_ez or q2_in_ez:
+                fixed_cells = []
+                if q1_in_ez:
+                    fixed_cells.append((loc1[2], loc1[1]))
+                if q2_in_ez:
+                    fixed_cells.append((loc2[2], loc2[1]))
+                if any(cell != fixed_cells[0] for cell in fixed_cells):
+                    raise ValueError("reused qubits of one gate occupy different interaction cells")
+                fixed_gate_cells[gate_index] = fixed_cells[0]
+                continue
+
             midy = loc1[1] + loc2[1] # no need to divide by 2, since we only need the relative location
             midx = loc1[2] + loc2[2]
             midpoints.append((midx, midy))
+            midpoint_gate_indices.append(gate_index)
 
-        # rank-compress
-        rows, cols, midpoints_ranked = self._rank_compress(midpoints)
+        if len(midpoints) + len(occupied_cells) > ezh * ezw:
+            raise ValueError("not enough free entanglement-zone cells for non-reused gates")
 
-        # compression and legalization
-        rank_grid_fits = rows <= ezh and cols <= ezw
-        ranked_points_unique = len(set(midpoints_ranked)) == len(midpoints_ranked)
-        if rank_grid_fits and ranked_points_unique:
-            midpoint_legalized = self._place_ranked_grid_middle_bottom(midpoints_ranked, rows, cols, ezh, ezw)
-        else:
-            midpoint_transformed = self._affine_transform(midpoints_ranked, rows, cols, ezh, ezw)
-            midpoint_legalized = self._point_embedding_nearest_free(midpoint_transformed, ezh, ezw)
-            compact_rows, compact_cols, midpoint_compacted = self._rank_compress(midpoint_legalized)
-            midpoint_legalized = self._place_ranked_grid_middle_bottom(
-                midpoint_compacted,
-                compact_rows,
-                compact_cols,
-                ezh,
-                ezw,
-            )
+        midpoint_legalized = self._embed_midpoints(midpoints, ezh, ezw, occupied_cells)
+        gate_cells = dict(fixed_gate_cells)
+        for gate_index, cell in zip(midpoint_gate_indices, midpoint_legalized):
+            gate_cells[gate_index] = cell
 
         # full mapping generation
-        new_mapping = deepcopy(storage_mapping)
-        for i, (x, y) in enumerate(midpoint_legalized):
-            q1, q2 = list_gate[i]
-            q1_x = storage_mapping[q1][2]
-            q2_x = storage_mapping[q2][2]
-            # keep the original left-right relationship of each qubit pair
+        gate_mapping = deepcopy(storage_mapping)
+        for gate_index, (q1, q2) in enumerate(list_gate):
+            x, y = gate_cells[gate_index]
+            loc1, loc2 = storage_mapping[q1], storage_mapping[q2]
+            q1_in_ez = loc1[0] in entanglement_slms
+            q2_in_ez = loc2[0] in entanglement_slms
+            if q1_in_ez and q2_in_ez:
+                continue
+            if q1_in_ez:
+                gate_mapping[q2] = (slmid_r if loc1[0] == slmid_l else slmid_l, y, x)
+                continue
+            if q2_in_ez:
+                gate_mapping[q1] = (slmid_r if loc2[0] == slmid_l else slmid_l, y, x)
+                continue
+
+            q1_x = loc1[2]
+            q2_x = loc2[2]
             if q1_x > q2_x:
                 q1, q2 = q2, q1
-            new_mapping[q1] = (slmid_l, y, x)
-            new_mapping[q2] = (slmid_r, y, x)
-        return new_mapping
+            gate_mapping[q1] = (slmid_l, y, x)
+            gate_mapping[q2] = (slmid_r, y, x)
+
+        next_storage_mapping = deepcopy(storage_mapping)
+        for q, loc in enumerate(next_storage_mapping):
+            if loc[0] in entanglement_slms:
+                next_storage_mapping[q] = self.home_storage_mapping[q]
+        for q in reuse_qubits:
+            next_storage_mapping[q] = gate_mapping[q]
+
+        return gate_mapping, next_storage_mapping
+
+    def _embed_midpoints(
+        self,
+        midpoints: list[tuple[int, int]],
+        rows: int,
+        cols: int,
+        occupied_cells: set[tuple[int, int]],
+    ) -> list[tuple[int, int]]:
+        if not midpoints:
+            return []
+
+        source_rows, source_cols, midpoints_ranked = self._rank_compress(midpoints)
+
+        rank_grid_fits = source_rows <= rows and source_cols <= cols
+        ranked_points_unique = len(set(midpoints_ranked)) == len(midpoints_ranked)
+        if rank_grid_fits and ranked_points_unique:
+            midpoint_legalized = self._place_ranked_grid_middle_bottom(
+                midpoints_ranked,
+                source_rows,
+                source_cols,
+                rows,
+                cols,
+            )
+            if self._cells_are_available(midpoint_legalized, occupied_cells):
+                return midpoint_legalized
+            return self._point_embedding_nearest_free(midpoint_legalized, rows, cols, occupied_cells)
+
+        midpoint_transformed = self._affine_transform(midpoints_ranked, source_rows, source_cols, rows, cols)
+        midpoint_legalized = self._point_embedding_nearest_free(midpoint_transformed, rows, cols, occupied_cells)
+        if occupied_cells:
+            return midpoint_legalized
+
+        compact_rows, compact_cols, midpoint_compacted = self._rank_compress(midpoint_legalized)
+        midpoint_compacted = self._place_ranked_grid_middle_bottom(
+            midpoint_compacted,
+            compact_rows,
+            compact_cols,
+            rows,
+            cols,
+        )
+        if self._cells_are_available(midpoint_compacted, occupied_cells):
+            return midpoint_compacted
+        return self._point_embedding_nearest_free(midpoint_compacted, rows, cols, occupied_cells)
+
+    def _cells_are_available(self, cells: list[tuple[int, int]], occupied_cells: set[tuple[int, int]]) -> bool:
+        return len(set(cells)) == len(cells) and not any(cell in occupied_cells for cell in cells)
 
     def _rank_compress(self, points: list[tuple[int, int]]) -> tuple[int, int, list[tuple[int, int]]]:
         '''Convert arbitrary points into a dense integer grid according to their relative location.
@@ -155,7 +238,13 @@ class PointEmbeddingPlacer:
             placed.append((x + x_offset, y + y_offset))
         return placed
 
-    def _point_embedding_nearest_free(self, points: list[tuple[int, int]], rows: int, cols: int):
+    def _point_embedding_nearest_free(
+        self,
+        points: list[tuple[int, int]],
+        rows: int,
+        cols: int,
+        occupied_cells = None,
+    ):
         '''Assign ideal points to distinct grid cells by nearest-free repair.
 
             Input points are real-valued ideal locations in (x, y) =
@@ -164,8 +253,12 @@ class PointEmbeddingPlacer:
         '''
         if rows <= 0 or cols <= 0:
             raise ValueError("target grid dimensions must be positive")
-        if len(points) > rows * cols:
-            raise ValueError("number of points exceeds target grid capacity")
+        occupied_cells = set() if occupied_cells is None else set(occupied_cells)
+        for cell in occupied_cells:
+            if not (0 <= cell[0] < cols and 0 <= cell[1] < rows):
+                raise ValueError("occupied cell is outside the target grid")
+        if len(points) + len(occupied_cells) > rows * cols:
+            raise ValueError("number of points exceeds available target grid capacity")
         if not points:
             return []
 
@@ -179,15 +272,20 @@ class PointEmbeddingPlacer:
             groups.setdefault(preferred, []).append((preferred_cost, index, point))
 
         free = _FreeRows(rows, cols)
+        for cell in occupied_cells:
+            free.remove(cell)
         assignment = [None] * len(points)
         overflow = []
 
         for preferred, candidates in groups.items():
             candidates.sort(key=lambda candidate: (candidate[0], candidate[1]))
-            _, winner_index, _ = candidates[0]
-            assignment[winner_index] = preferred
-            free.remove(preferred)
-            overflow.extend(candidates[1:])
+            if free.contains(preferred):
+                _, winner_index, _ = candidates[0]
+                assignment[winner_index] = preferred
+                free.remove(preferred)
+                overflow.extend(candidates[1:])
+            else:
+                overflow.extend(candidates)
 
         overflow.sort(key=lambda candidate: (candidate[0], candidate[1]))
         for _, index, point in overflow:
@@ -212,6 +310,10 @@ class _FreeRows:
         col, row = cell
         self.rows[row].remove(col)
         self.free_count -= 1
+
+    def contains(self, cell: tuple[int, int]) -> bool:
+        col, row = cell
+        return self.rows[row].contains(col)
 
     def take_nearest(self, point: tuple[float, float]) -> tuple[int, int]:
         if self.free_count == 0:
@@ -277,6 +379,17 @@ class _IntervalSet:
                 node = node.right
 
         return result
+
+    def contains(self, value: int) -> bool:
+        node = self.root
+        while node is not None:
+            if value < node.start:
+                node = node.left
+            elif value <= node.end:
+                return True
+            else:
+                node = node.right
+        return False
 
     def remove(self, value: int):
         self.root, removed = _remove(self.root, value)

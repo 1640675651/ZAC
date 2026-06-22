@@ -133,20 +133,18 @@ class Placer_mixin:
 
         placer = PointEmbeddingPlacer()
 
-        S_i = self.qubit_mapping[0]
-        G_i = None 
-
-        # Each step: G_i from S_i.
+        # Each step: G_i and S_{i+1} from S_i.
         n_layer = len(self.gate_scheduling)
         for layer in range(n_layer):
             t_p0 = time.perf_counter()
-            G_i = placer.run(
+            G_i, S_next = placer.run(
                 self.architecture,
                 self.gate_scheduling[layer],
-                self.qubit_mapping[-1] # S_i
+                self.qubit_mapping[-1], # S_i
+                self.reuse_qubit[layer],
             )
             
-            self.qubit_mapping.extend([G_i, S_i])
+            self.qubit_mapping.extend([G_i, S_next])
  
             t_p1 = time.perf_counter()
             self.runtime_analysis["placement_per_layer_ms"].append((t_p1 - t_p0) * 1000.0)
