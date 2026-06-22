@@ -7,6 +7,7 @@ import os
 import platform
 import shutil
 import subprocess
+import threading
 from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 from dataclasses import dataclass
 from io import BytesIO
@@ -53,10 +54,46 @@ def _normalize_color(color) -> tuple:
     return tuple(float(c) for c in color)
 
 
+def _figure_frame_size(fig) -> Tuple[int, int]:
+    w, h = fig.get_size_inches()
+    dpi = fig.dpi
+    return int(round(w * dpi)), int(round(h * dpi))
+
+
+def _estimate_videotoolbox_bitrate(width: int, height: int) -> str:
+    # VideoToolbox ignores CRF; Intel Macs need an explicit target bitrate.
+    mbps = max(2, (width * height * 6 + 999_999) // 1_000_000)
+    return f'{mbps}M'
+
+
+def _stdin_write_all(stream, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        written = stream.write(view)
+        if written is None or written == 0:
+            raise BrokenPipeError('ffmpeg stdin closed before frame was fully written')
+        view = view[written:]
+
+
+def _start_stderr_drainer(
+    proc: subprocess.Popen,
+) -> Tuple[threading.Thread, List[bytes]]:
+    chunks: List[bytes] = []
+
+    def _drain() -> None:
+        if proc.stderr is not None:
+            chunks.append(proc.stderr.read())
+
+    thread = threading.Thread(target=_drain, daemon=True)
+    thread.start()
+    return thread, chunks
+
+
 def _resolve_ffmpeg_codec(
     ffmpeg: str = 'ffmpeg',
     codec: Optional[str] = None,
     use_gpu: bool = True,
+    frame_size: Optional[Tuple[int, int]] = None,
 ) -> Tuple[str, List[str]]:
     if codec is None and use_gpu:
         codec = _detect_hw_codec(ffmpeg)
@@ -66,7 +103,9 @@ def _resolve_ffmpeg_codec(
             print("[INFO] Animator: no GPU ffmpeg encoder found, using software encoding")
     if codec is None:
         codec = 'h264'
-    return codec, _ffmpeg_writer_extra_args(codec) if codec != 'h264' else ['-pix_fmt', 'yuv420p']
+    if codec == 'h264':
+        return codec, ['-pix_fmt', 'yuv420p']
+    return codec, _ffmpeg_writer_extra_args(codec, frame_size)
 
 
 def _render_frame_task(
@@ -136,6 +175,7 @@ def _parallel_render_to_ffmpeg(
     progress = _make_animation_progress_callback() if show_progress else None
     max_in_flight = max(workers * 2, workers)
     width, height = ctx.frame_size
+    frame_bytes = width * height * 4
     command = [
         ffmpeg, '-y', '-f', 'rawvideo', '-vcodec', 'rawvideo',
         '-s', f'{width}x{height}', '-pix_fmt', 'rgba',
@@ -147,14 +187,25 @@ def _parallel_render_to_ffmpeg(
         command, stdin=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     assert proc.stdin is not None
+    stderr_thread, stderr_chunks = _start_stderr_drainer(proc)
 
     def drain_completed(done_futures) -> None:
         nonlocal next_to_write
         for future_done in done_futures:
-            idx, frame_data, _size = future_done.result()
+            idx, frame_data, size = future_done.result()
+            if size != (width, height):
+                raise ValueError(
+                    f'frame {idx}: expected {width}x{height}, '
+                    f'worker rendered {size[0]}x{size[1]}',
+                )
+            if len(frame_data) != frame_bytes:
+                raise ValueError(
+                    f'frame {idx}: expected {frame_bytes} bytes, '
+                    f'got {len(frame_data)}',
+                )
             rendered[idx] = frame_data
             while next_to_write in rendered:
-                proc.stdin.write(rendered.pop(next_to_write))
+                _stdin_write_all(proc.stdin, rendered.pop(next_to_write))
                 if progress is not None:
                     progress(next_to_write, total)
                 next_to_write += 1
@@ -178,7 +229,8 @@ def _parallel_render_to_ffmpeg(
                 del in_flight[future_done]
 
     proc.stdin.close()
-    stderr = proc.stderr.read() if proc.stderr is not None else b''
+    stderr_thread.join()
+    stderr = stderr_chunks[0] if stderr_chunks else b''
     return_code = proc.wait()
     if return_code != 0:
         err = stderr.decode(errors='replace')
@@ -224,10 +276,16 @@ def _detect_hw_codec(ffmpeg: str = 'ffmpeg') -> Optional[str]:
     return None
 
 
-def _ffmpeg_writer_extra_args(codec: str) -> List[str]:
+def _ffmpeg_writer_extra_args(
+    codec: str,
+    frame_size: Optional[Tuple[int, int]] = None,
+) -> List[str]:
     extra_args = ['-pix_fmt', 'yuv420p']
     if 'nvenc' in codec:
         extra_args.extend(['-preset', 'p4'])
+    elif 'videotoolbox' in codec and frame_size is not None:
+        w, h = frame_size
+        extra_args.extend(['-b:v', _estimate_videotoolbox_bitrate(w, h)])
     return extra_args
 
 
@@ -236,9 +294,10 @@ def _build_ffmpeg_writer(
     ffmpeg: str = 'ffmpeg',
     codec: Optional[str] = None,
     use_gpu: bool = True,
+    frame_size: Optional[Tuple[int, int]] = None,
 ) -> FFMpegWriter:
     resolved_codec, extra_args = _resolve_ffmpeg_codec(
-        ffmpeg=ffmpeg, codec=codec, use_gpu=use_gpu,
+        ffmpeg=ffmpeg, codec=codec, use_gpu=use_gpu, frame_size=frame_size,
     )
     if resolved_codec == 'h264':
         return FFMpegWriter(fps)
@@ -392,6 +451,7 @@ class Animator():
             ffmpeg=ffmpeg,
             codec=ffmpeg_codec,
             use_gpu=use_gpu,
+            frame_size=_figure_frame_size(self.fig),
         )
         save_kwargs = {}
         if show_progress:
@@ -421,7 +481,10 @@ class Animator():
         plt.close(self.fig)
 
         codec, extra_args = _resolve_ffmpeg_codec(
-            ffmpeg=ffmpeg, codec=ffmpeg_codec, use_gpu=use_gpu,
+            ffmpeg=ffmpeg,
+            codec=ffmpeg_codec,
+            use_gpu=use_gpu,
+            frame_size=static_ctx.frame_size,
         )
         _parallel_render_to_ffmpeg(
             states,
