@@ -629,16 +629,17 @@ class Router_mixin:
                 continue
             duration = self.get_duration(self.result_json['instructions'][idx])
             list_instruction_duration[duration_idx].append((duration, idx))
-        list_instruction_duration[0] = sorted(list_instruction_duration[0], reverse=True)
-        list_instruction_duration[1] = sorted(list_instruction_duration[1], reverse=True)
-        # assign instruction according to the duration in descending order
-        # print("list_instruction_duration")
-        # print(list_instruction_duration)
+        # Time rearranges in emission / dependency order (by instruction index),
+        # not longest-first. Duration-desc sorting can time a job before its site
+        # predecessor has absolute times, dropping site constraints.
+        list_instruction_duration[0] = sorted(
+            list_instruction_duration[0], key=lambda item: item[1])
+        list_instruction_duration[1] = sorted(
+            list_instruction_duration[1], key=lambda item: item[1])
         for i in range(2):
             for item in list_instruction_duration[i]:
                 duration = item[0]
                 inst = self.result_json['instructions'][item[1]]
-                # print(inst)
                 begin_time, aod_id = heapq.heappop(self.aod_end_time)
                 begin_time = max(begin_time, self.get_begin_time(item[1], inst["dependency"]))
                 end_time = begin_time + duration
@@ -648,24 +649,15 @@ class Router_mixin:
                 inst["end_time"] = end_time
                 inst["aod_id"] = aod_id
                 heapq.heappush(self.aod_end_time, (end_time, aod_id))
-                # !
                 for detail_inst in inst["insts"]: 
                     detail_inst["begin_time"] += begin_time
                     detail_inst["end_time"] += begin_time
                 if self.result_json["runtime"] < end_time:
                     self.result_json["runtime"] = end_time
-                # print("process instruction:")
-                # print(inst)
-                # input()
             if i == 0:
-                # print("list_gate_layer_idx")
-                # print(list_gate_layer_idx)
                 for gate_layer_idx in list_gate_layer_idx:    
                     # ! laser scheduling
                     inst = self.result_json['instructions'][gate_layer_idx]
-                    # print(inst)
-                    # print(gate_layer_idx)
-                    # print(inst["dependency"])
                     begin_time = self.get_begin_time(gate_layer_idx, inst["dependency"])
                     if inst["type"] == "rydberg":
                         end_time = begin_time + self.architecture.time_rydberg
@@ -675,9 +667,6 @@ class Router_mixin:
                         self.result_json["runtime"] = end_time
                     inst["begin_time"] = begin_time
                     inst["end_time"] = end_time
-                    # input()
-            
-        # raise NotImplementedError
 
     def get_begin_time(self, cur_inst_idx: int, dependency: dict):
         begin_time = 0

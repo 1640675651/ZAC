@@ -5,47 +5,47 @@
         "slms": [{
             "id": 0,
             "site_seperation": [3, 3],
-            "r": 10,
-            "c": 10,
+            "r": 15,
+            "c": 15,
             "location": [0, 0]}
         ],
         "offset": [0, 0],
-        "dimension": [30, 30]
+        "dimension": [45, 45]
     }],
     "entanglement_zones": [{
         "zone_id": 0,
         "slms": [{
                 "id": 1,
                 "site_seperation": [12, 10],
-                "r": 3,
-                "c": 7,
-                "location": [-22, 42]
+                "r": 6,
+                "c": 10,
+                "location": [-22, 55]
             },
             {
                 "id": 2,
                 "site_seperation": [12, 10],
-                "r": 3,
-                "c": 7,
-                "location": [-20, 42]
+                "r": 6,
+                "c": 10,
+                "location": [-20, 55]
             }
         ],
-        "offset": [-22, 42],
-        "dimension": [60, 72]
+        "offset": [-22, 55],
+        "dimension": [120, 60]
     }],
     "aods": [{
         "id": 0,
         "site_seperation": 2,
-        "r": 10,
-        "c": 10
+        "r": 15,
+        "c": 15
     }],
     "arch_range": [
         [-32, 0],
-        [60, 72]
+        [100, 120]
     ],
     "rydberg_range": [
         [
-            [-22, 33],
-            [60, 72]
+            [-22, 50],
+            [100, 120]
         ]
     ]
 }

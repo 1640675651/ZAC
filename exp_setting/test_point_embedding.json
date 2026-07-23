@@ -6,7 +6,7 @@
         "dir": "result/zac/test_point_embedding/",
         "routing_strategy": "maximalis_sort",
         "trivial_placement": true,
-        "placement_strategy": "point_embedding",
+        "placement_strategy": "vertex_matching",
         "dynamic_placement": false,
         "use_window": true,
         "window_size": 1000,
