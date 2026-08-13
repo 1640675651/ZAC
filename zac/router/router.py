@@ -670,17 +670,30 @@ class Router_mixin:
 
     def get_begin_time(self, cur_inst_idx: int, dependency: dict):
         begin_time = 0
+
+        def _dep_end(inst_idx: int) -> float | None:
+            # Self-deps show up on some 1qGate layers (qubit_dependency already
+            # points at the instruction being scheduled); ignore them.
+            if inst_idx == cur_inst_idx:
+                return None
+            inst = self.result_json['instructions'][inst_idx]
+            if "end_time" not in inst:
+                return None
+            return float(inst["end_time"])
+
         for dependency_type in dependency:
             if isinstance(dependency[dependency_type], int):
-                inst_idx = dependency[dependency_type]
-                if begin_time < self.result_json['instructions'][inst_idx]["end_time"]:
-                    begin_time = self.result_json['instructions'][inst_idx]["end_time"]
+                end = _dep_end(dependency[dependency_type])
+                if end is not None and begin_time < end:
+                    begin_time = end
             else:
                 # print(dependency_type)
                 # print(dependency[dependency_type])
                 # if False:
                 if dependency_type == "site":
                     for inst_idx in dependency[dependency_type]:
+                        if inst_idx == cur_inst_idx:
+                            continue
                         if self.result_json['instructions'][inst_idx]["type"] == "rearrangeJob":
                             # find the time that the instruction finish atom transfer
                             # ! 
@@ -707,12 +720,14 @@ class Router_mixin:
                             # print("atom_transfer_begin_time: ", atom_transfer_begin_time)
                             # print("begin time for site depend: ", tmp_begin_time)
                         else:
-                            if begin_time < self.result_json['instructions'][inst_idx]["end_time"]:
-                                begin_time = self.result_json['instructions'][inst_idx]["end_time"]
+                            end = _dep_end(inst_idx)
+                            if end is not None and begin_time < end:
+                                begin_time = end
                 else:
                     for inst_idx in dependency[dependency_type]:
-                        if begin_time < self.result_json['instructions'][inst_idx]["end_time"]:
-                            begin_time = self.result_json['instructions'][inst_idx]["end_time"]
+                        end = _dep_end(inst_idx)
+                        if end is not None and begin_time < end:
+                            begin_time = end
         return begin_time
     
     def get_duration(self, inst: dict):

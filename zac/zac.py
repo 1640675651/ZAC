@@ -50,7 +50,7 @@ class ZAC(Scheduler_mixin, Placer_mixin, Router_mixin, Verifier_mixin, Animator)
         if "placement_strategy" in setting:
             requested = setting["placement_strategy"]
             # ZAC gate placement is vertex-matching only. Midpoint / point-embedding
-            # remains available as zac.placer.peplacer for other projects (e.g. AtomOS).
+            # lives in AtomOS as peplacer.PointEmbeddingPlacer (via placer_pe).
             if requested not in {"vertex_matching", "point_embedding"}:
                 raise ValueError("Unrecognized placement strategy")
             if requested != "vertex_matching":
